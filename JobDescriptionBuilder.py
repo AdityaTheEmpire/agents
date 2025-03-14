@@ -18,8 +18,8 @@ TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
 
 # LinkedIn API setup function
 def get_linkedin_data(company_name):
-    li_at_value = "AQEDAUF4XqYC5iCsAAABlWIJYlsAAAGVhhXmW1YAB666BIg-GhSjUc2n6yc-rRuLcoLB116udjDYCucTEvKkZ9lilc7w3qmqVg6oaNLkxULbOoMKBNQYVzw1sn8bbT8saMXGk8nR3h-HpZ0_gn923Mxr"
-    cookie_dict = {"li_at": li_at_value, "JSESSIONID": "ajax:5172403101787511942"}
+    li_at_value = ""
+    cookie_dict = {"li_at": li_at_value, "JSESSIONID": ""}
     cookie_jar = cookiejar_from_dict(cookie_dict)
     api = Linkedin(username="", password="", cookies=cookie_jar)
 
