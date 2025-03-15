@@ -1,9 +1,14 @@
 import pandas as pd
 from langchain_google_genai import ChatGoogleGenerativeAI
 from linkedin_api import Linkedin
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
 # Initialize Gemini 2.0 Flash model using LangChain
-llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", google_api_key="YOUR_GOOGLE_API_KEY") [[1]]
+llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash")
 
 def generate_personalized_message(candidate_profile):
     """
