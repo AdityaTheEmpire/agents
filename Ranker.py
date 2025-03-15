@@ -5,6 +5,7 @@ from langchain.embeddings import HuggingFaceEmbeddings
 import numpy as np
 
 
+
 class CandidateRanker:
     def __init__(self):
         # Initialize embedding model for semantic similarity
