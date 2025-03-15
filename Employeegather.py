@@ -1,216 +1,153 @@
-import os
-import re
 import csv
-from typing import Annotated
-from typing_extensions import TypedDict
-from langgraph.graph import StateGraph, START, END
-from requests.utils import cookiejar_from_dict
-from linkedin_api import Linkedin
 import time
 import random
-from langchain_core.prompts import PromptTemplate
-from langchain_google_genai import ChatGoogleGenerativeAI
-from dotenv import load_dotenv
+from linkedin_api import Linkedin
+from requests.cookies import cookiejar_from_dict
+from requests.exceptions import TooManyRedirects, RequestException
 
-# Load environment variables
-load_dotenv()
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+# Initialize 2 API clients with different cookies for detail fetching
+api_list = [
+    Linkedin("", "", cookies=cookiejar_from_dict({
+        'li_at': 'AQEDAViymF4F0WuJAAABlZezUp8AAAGVu7_Wn00ADOAUY_UdmihV3U3r0oOsOJ_SaDWz5adUUvrzlDvgnHmTGU4fm0jR-KM6m-lC-PlEvN9YkxCdUvuOGEtyIu_OKiMzZ9v0zsCp6mRB_HrQluOmSBMu',
+        'JSESSIONID': "ajax:1814459957551507485"
+    })),
+    Linkedin("", "", cookies=cookiejar_from_dict({
+        'li_at': 'AQEDAVG05kIAU6FGAAABlZe1PQQAAAGVu8HBBE4Aikrn_HrCdSAUFzkbhWc_Zy94Fxs6ImiswzL4Kw0EEmWowZyn1H4yPuu0d6xMKSadbxEkIIfE1FQN4IOgNKuiPJJ0yT7xqio07mijUt03idUeoypV',
+        'JSESSIONID': "ajax:7202757016389648524"
+    }))
+]
 
-# LinkedIn API setup
-def initialize_linkedin_api():
-    li_at_value = "AQEDAUF4XqYC5iCsAAABlWIJYlsAAAGVhhXmW1YAB666BIg-GhSjUc2n6yc-rRuLcoLB116udjDYCucTEvKkZ9lilc7w3qmqVg6oaNLkxULbOoMKBNQYVzw1sn8bbT8saMXGk8nR3h-HpZ0_gn923Mxr"
-    cookie_dict = {"li_at": li_at_value, "JSESSIONID": "ajax:5172403101787511942"}
-    cookie_jar = cookiejar_from_dict(cookie_dict)
-    return Linkedin(username="", password="", cookies=cookie_jar)
+# Primary search API (use a different cookie)
+primary_api = Linkedin("", "", cookies=cookiejar_from_dict({
+    'li_at': 'AQEDAVizb-gBUNnXAAABlZe2wtYAAAGVu8NG1k0Alq6-H1W_2XLEJYINVpdqqwBZz_LbK5cENqHygakb0amVpm2-MuQJhde7-aoumA9307uVojzCmjv9eLgM-UYXExtdK7jlahBjzpfGYXjWw7oXodj4',
+    'JSESSIONID': "ajax:2914782125008715326"
+}))
 
-# Define state for the graph
-class State(TypedDict):
+def search_people_and_save_csv(search_params: dict, output_csv: str = "candidates.csv", limit: int = 100):
     """
-    Represents the state object for the employee search workflow.
+    Search LinkedIn for people, fetch their profiles, and save to a CSV file.
     
-    Attributes:
-        job_file (str): Path to the job description markdown file
-        firm_name (str): Name of the company
-        role (str): Job title/role
-        location (str): Job location
-        qualifications (str): Required qualifications
-        industry (str): Industry of the company
-        employees (list): List of employee profiles from LinkedIn
-        filtered_employees (list): Filtered employee data for CSV
+    Args:
+        search_params (dict): Parameters for the search (e.g., {'keywords': 'software engineer'}).
+        output_csv (str): Output CSV filename.
+        limit (int): Maximum number of profiles to fetch.
+    
+    Returns:
+        str: The CSV filename.
     """
-    job_file: str
-    firm_name: str
-    role: str
-    location: str
-    qualifications: str
-    industry: str
-    employees: list
-    filtered_employees: list
+    csv_filename = output_csv
+    processed_count = 0
+    total_profiles = []
+    current_api_index = 0  # For rotating detail APIs
 
-graph_builder = StateGraph(State)
+    # Define fieldnames for CSV
+    fieldnames = ["urn_id", "jobtitle", "location", "experience", 
+                  "certifications", "skills", "open_to_work", "interests"]
 
-# Node 1: Parse Job Description
-def parse_jd_node(state: State):
-    """
-    Parses the job description markdown file to extract key details.
-    """
-    with open(state["job_file"], "r") as file:
-        content = file.read()
-
-    firm_name = re.search(r"Company Overview\n(.+?) is", content)
-    firm_name = firm_name.group(1) if firm_name else "Unknown Company"
-
-    role = re.search(r"Job Title\n(.+?)\n", content)
-    role = role.group(1).strip() if role else "Unknown Role"
-
-    location = re.search(r"Based in (.+?), we operate", content)
-    location = location.group(1) if location else "Unknown Location"
-
-    qualifications = re.search(r"# Qualifications\n([\s\S]+?)# Benefits", content)
-    qualifications = qualifications.group(1).strip() if qualifications else "No qualifications specified"
-
-    industry = re.search(r"we operate in the (.+?) sector", content)
-    industry = industry.group(1) if industry else "Unknown Industry"
-
-    return {
-        "firm_name": firm_name,
-        "role": role,
-        "location": location,
-        "qualifications": qualifications,
-        "industry": industry,
-        "employees": [],
-        "filtered_employees": []
-    }
-
-graph_builder.add_node("parse_jd", parse_jd_node)
-
-# Node 2: Search Employees on LinkedIn
-def search_employees_node(state: State):
-    """
-    Searches LinkedIn for employees based on JD criteria.
-    """
-    api = initialize_linkedin_api()
-
-    # Get company URN
-    time.sleep(random.uniform(1, 3))
-    search_results = api.search_companies(state["firm_name"])
-    if not search_results:
-        raise Exception(f'Company "{state["firm_name"]}" not found.')
-    company_urn = search_results[0]['urn_id']
-
-    # Extract filters from qualifications (e.g., experience, skills)
-    qualifications = state["qualifications"].lower()
-    experience = re.search(r"(\d+\+?) years", qualifications)
-    experience_years = experience.group(1) if experience else None
-    skills = re.findall(r"(strong|excellent|proficient|experience in) (.+?)( skills| experience|,|\.|and|\n)", qualifications)
-    skills = [skill[1] for skill in skills] if skills else []
-
-    # Perform LinkedIn search
-    time.sleep(random.uniform(1, 3))
-    employees = api.search_people(
-        current_company=[company_urn],
-        keyword_title=state["role"],
-        industries=[state["industry"]] if state["industry"] != "Unknown Industry" else None,
-        keywords=" ".join(skills) if skills else None,
-        limit=50  # Adjust as needed
-    )
-    return {"employees": employees}
-
-graph_builder.add_node("search_employees", search_employees_node)
-
-# Node 3: Filter and Process Employees
-llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", google_api_key=GOOGLE_API_KEY)
-
-def filter_employees_node(state: State):
-    """
-    Filters employees based on JD criteria and extracts relevant data.
-    """
-    qualifications = state["qualifications"]
-    employees = state["employees"]
-    filtered_employees = []
-
-    prompt_template = PromptTemplate(
-        input_variables=["employee_data", "qualifications"],
-        template="""
-        Given the employee data: {employee_data}
-        And job qualifications: {qualifications}
-        Extract and return a dictionary with:
-        - urnid: Employee's URN ID
-        - skills: List of skills (comma-separated)
-        - experience: Total years of experience (numeric or 'Unknown')
-        - location: Employee's location
-        - industry: Employee's industry
-        Only include fields relevant to filtering, no names or extra details.
-        If data is missing, use 'Unknown'.
-        """
-    )
-
-    for emp in employees:
-        try:
-            emp_data = str(emp)  # Convert dict to string for LLM
-            prompt = prompt_template.format(employee_data=emp_data, qualifications=qualifications)
-            result = llm.invoke(prompt)
-            filtered_data = eval(result.content)  # Assuming LLM returns a valid dict string
-            filtered_employees.append(filtered_data)
-        except Exception:
-            filtered_employees.append({
-                "urnid": emp.get("urn_id", "Unknown"),
-                "skills": "Unknown",
-                "experience": "Unknown",
-                "location": "Unknown",
-                "industry": "Unknown"
-            })
-
-    return {"filtered_employees": filtered_employees}
-
-graph_builder.add_node("filter_employees", filter_employees_node)
-
-# Node 4: Save to CSV
-def save_to_csv_node(state: State):
-    """
-    Saves filtered employee data to a CSV file.
-    """
-    filtered_employees = state["filtered_employees"]
-    output_file = f"{state['firm_name']}_employees.csv"
-    headers = ["urnid", "skills", "experience", "location", "industry"]
-
-    with open(output_file, "w", newline="") as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=headers)
+    # Initialize CSV with headers using DictWriter
+    with open(csv_filename, mode="w", newline="", encoding="utf-8") as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()
-        for emp in filtered_employees:
-            writer.writerow({
-                "urnid": emp.get("urnid", "Unknown"),
-                "skills": emp.get("skills", "Unknown"),
-                "experience": emp.get("experience", "Unknown"),
-                "location": emp.get("location", "Unknown"),
-                "industry": emp.get("industry", "Unknown")
-            })
 
-    return state  # No state change needed
+    while processed_count < limit:
+        try:
+            # Fetch next batch of profiles
+            batch_size = min(limit - processed_count, 50)
+            search_params['limit'] = batch_size
+            search_params['offset'] = processed_count
+            results = primary_api.search_people(**search_params)
 
-graph_builder.add_node("save_to_csv", save_to_csv_node)
+            if not results:
+                print("No more search results found")
+                break
 
-# Define edges
-graph_builder.add_edge(START, "parse_jd")
-graph_builder.add_edge("parse_jd", "search_employees")
-graph_builder.add_edge("search_employees", "filter_employees")
-graph_builder.add_edge("filter_employees", "save_to_csv")
-graph_builder.add_edge("save_to_csv", END)
+            for candidate in results:
+                urn_id = candidate.get("urn_id")
+                if not urn_id:
+                    print(f"Skipping candidate due to missing urn_id: {candidate}")
+                    continue
 
-# Compile the graph
-graph = graph_builder.compile()
+                try:
+                    # Rotate between detail APIs
+                    detail_api = api_list[current_api_index % len(api_list)]
+                    current_api_index += 1
 
-# Main function to run the agent
-def run_employee_search_agent(job_file: str):
-    """
-    Executes the employee search workflow based on a job description file.
-    """
-    if not os.path.exists(job_file):
-        raise FileNotFoundError(f"Job description file '{job_file}' not found.")
-    
-    result = graph.invoke({"job_file": job_file})
-    return result
+                    # Fetch detailed profile
+                    detailed_profile = detail_api.get_profile(urn_id)
+                    if not detailed_profile:
+                        print(f"Failed to fetch profile for {urn_id}")
+                        continue
 
+                    # Parse profile data
+                    processed_profile = {
+                        "urn_id": urn_id,
+                        "jobtitle": candidate.get("headline", ""),
+                        "location": candidate.get("locationName", ""),
+                        "experience": _parse_experience(detailed_profile.get("experience", [])),
+                        "certifications": _parse_list(detailed_profile.get("certifications", [])),
+                        "skills": _parse_list(detailed_profile.get("skills", [])),
+                        "open_to_work": detailed_profile.get("openToOpportunities", False),
+                        "interests": _parse_list(detailed_profile.get("interests", []))
+                    }
+
+                    total_profiles.append(processed_profile)
+                    processed_count += 1
+
+                    # Write to CSV in batches
+                    if len(total_profiles) >= 10:
+                        _append_to_csv(csv_filename, total_profiles, fieldnames)
+                        total_profiles = []
+
+                    # Add delay to avoid rate limiting
+                    time.sleep(random.uniform(1, 3))
+
+                except TooManyRedirects:
+                    print(f"TooManyRedirects for {urn_id}, rotating API")
+                    current_api_index += 1
+                    continue
+                except RequestException as e:
+                    print(f"Network error fetching {urn_id}: {str(e)}")
+                    continue
+                except Exception as e:
+                    print(f"Unexpected error fetching {urn_id}: {str(e)}")
+                    continue
+
+            # Write remaining profiles after batch
+            if total_profiles:
+                _append_to_csv(csv_filename, total_profiles, fieldnames)
+                total_profiles = []
+
+        except Exception as e:
+            print(f"Search error: {str(e)}")
+            break
+
+    print(f"Processed {processed_count} profiles successfully")
+    return csv_filename
+
+def _parse_experience(experience_data: list) -> str:
+    """Parse experience data into a formatted string."""
+    if not isinstance(experience_data, list):
+        return "No experience data"
+    return " | ".join([
+        f"{exp.get('companyName', '')}: {exp.get('title', '')} "
+        f"({exp.get('timePeriod', {}).get('startDate', '')} - "
+        f"{exp.get('timePeriod', {}).get('endDate', 'Present')})"
+        for exp in experience_data
+    ]) if experience_data else "No experience data"
+
+def _parse_list(items: list) -> str:
+    """Parse a list of items (e.g., skills, certifications) into a string."""
+    if not isinstance(items, list):
+        return "None"
+    return ", ".join([item.get("name", "") for item in items]) if items else "None"
+
+def _append_to_csv(filename: str, data: list, fieldnames: list):
+    """Append a list of profile dictionaries to the CSV file."""
+    with open(filename, mode="a", newline="", encoding="utf-8") as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writerows(data)
+
+# Example usage
 if __name__ == "__main__":
-    job_file = "moon-event_Event Planner.md"
-    run_employee_search_agent(job_file)
+    result = search_people_and_save_csv({'keywords': 'software engineer'})
+    print(f"Results saved to {result}")
