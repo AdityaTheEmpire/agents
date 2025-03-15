@@ -8,19 +8,19 @@ from requests.exceptions import TooManyRedirects, RequestException
 # Initialize 2 API clients with different cookies for detail fetching
 api_list = [
     Linkedin("", "", cookies=cookiejar_from_dict({
-        'li_at': 'AQEDAViymF4F0WuJAAABlZezUp8AAAGVu7_Wn00ADOAUY_UdmihV3U3r0oOsOJ_SaDWz5adUUvrzlDvgnHmTGU4fm0jR-KM6m-lC-PlEvN9YkxCdUvuOGEtyIu_OKiMzZ9v0zsCp6mRB_HrQluOmSBMu',
-        'JSESSIONID': "ajax:1814459957551507485"
+        'li_at': '',
+        'JSESSIONID': ""
     })),
     Linkedin("", "", cookies=cookiejar_from_dict({
-        'li_at': 'AQEDAVG05kIAU6FGAAABlZe1PQQAAAGVu8HBBE4Aikrn_HrCdSAUFzkbhWc_Zy94Fxs6ImiswzL4Kw0EEmWowZyn1H4yPuu0d6xMKSadbxEkIIfE1FQN4IOgNKuiPJJ0yT7xqio07mijUt03idUeoypV',
-        'JSESSIONID': "ajax:7202757016389648524"
+        'li_at': '',
+        'JSESSIONID': ""
     }))
 ]
 
 # Primary search API (use a different cookie)
 primary_api = Linkedin("", "", cookies=cookiejar_from_dict({
-    'li_at': 'AQEDAVizb-gBUNnXAAABlZe2wtYAAAGVu8NG1k0Alq6-H1W_2XLEJYINVpdqqwBZz_LbK5cENqHygakb0amVpm2-MuQJhde7-aoumA9307uVojzCmjv9eLgM-UYXExtdK7jlahBjzpfGYXjWw7oXodj4',
-    'JSESSIONID': "ajax:2914782125008715326"
+    'li_at': '',
+    'JSESSIONID': ""
 }))
 
 def search_people_and_save_csv(search_params: dict, output_csv: str = "candidates.csv", limit: int = 100):
