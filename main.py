@@ -23,10 +23,10 @@ llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", google_api_key=GOOGLE_API
 
 # Import functions from other scripts
 # Note: These functions need to be modified to accept `api` and `llm` where necessary
-from job_description_generator import run_graph
-from candidate_gatherer import gather_people_csv
-from candidate_ranker import ranker_sort
-from messenger import message_people
+from JobDescriptionBuilder import run_graph
+from Employeegather import gather_people_csv
+from Ranker import ranker_sort
+from messageAgent import message_people
 
 def main():
     st.title("LinkedIn Job Outreach App")
