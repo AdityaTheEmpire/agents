@@ -1,117 +1,202 @@
 import streamlit as st
-from dotenv import load_dotenv
-import os
-from linkedin_api import Linkedin
-from requests.utils import cookiejar_from_dict
-from langchain_google_genai import ChatGoogleGenerativeAI
 import pandas as pd
-import time
+import os
+from dotenv import load_dotenv
+from JobDescriptionBuilder import run_graph  # Generates the JD file
+from Employeegather import gather_people_csv  # Generates the candidate CSV
+from Ranker import ranker_sort  # Generates the ranked CSV
+from messageAgent import message_people  # Sends messages and generates a messaged CSV
 
-# Load environment variables
+# Load environment variables for API authentication
 load_dotenv()
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 LI_AT_VALUE = os.getenv("LI_AT_VALUE")
 JSESSIONID = os.getenv("JSESSIONID")
 
-# Initialize LinkedIn API
-cookie_dict = {"li_at": LI_AT_VALUE, "JSESSIONID": JSESSIONID}
-cookie_jar = cookiejar_from_dict(cookie_dict)
-api = Linkedin(username="", password="", cookies=cookie_jar)
+# Function to sanitize file names
+def sanitize_filename(text):
+    """Replace spaces and special characters with underscores."""
+    return text.replace(" ", "_").replace("/", "_").replace("\\", "_")
 
-# Initialize language model
-llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", google_api_key=GOOGLE_API_KEY)
-
-# Import functions from other scripts
-# Note: These functions need to be modified to accept `api` and `llm` where necessary
-from JobDescriptionBuilder import run_graph
-from Employeegather import gather_people_csv
-from Ranker import ranker_sort
-from messageAgent import message_people
+# Function to display CSV data with images
+def display_csv_with_images(csv_file, highlight_green=False):
+    """Display CSV data with images and optionally highlight names in green."""
+    try:
+        df = pd.read_csv(csv_file)
+        for index, row in df.iterrows():
+            name = row.get('name', 'Unknown Name')
+            if highlight_green:
+                st.markdown(f"<span style='color:green'>**{name}** - Message Sent</span>", unsafe_allow_html=True)
+            else:
+                st.write(f"**{name}**")
+            image_url = row.get('profile image URL') or row.get('image_link')
+            if pd.notna(image_url):
+                try:
+                    st.image(image_url, width=100)
+                except:
+                    st.write("(Image unavailable)")
+            skills = row.get('skills', 'N/A')
+            job_title = row.get('job title', 'N/A')
+            location = row.get('location', 'N/A')
+            st.write(f"Skills: {skills}")
+            st.write(f"Job Title: {job_title}")
+            st.write(f"Location: {location}")
+            st.write("---")
+    except FileNotFoundError:
+        st.error(f"CSV file {csv_file} not found.")
 
 def main():
-    st.title("LinkedIn Job Outreach App")
+    st.title("Dynamic LinkedIn Job Outreach Application")
 
-    # Initialize session state for step tracking
-    if 'step' not in st.session_state:
-        st.session_state.step = 1
+    # Initialize session state
+    if 'workflows' not in st.session_state:
+        st.session_state.workflows = {}  # Store workflow states
+    if 'current_workflow_id' not in st.session_state:
+        st.session_state.current_workflow_id = None
 
-    # Step 1: Collect user inputs
-    if st.session_state.step == 1:
-        st.header("Step 1: Enter Job Details")
+    # Sidebar for workflow management
+    with st.sidebar:
+        st.header("Workflow Management")
+        if st.button("Start New Workflow"):
+            workflow_id = f"workflow_{len(st.session_state.workflows) + 1}"
+            st.session_state.workflows[workflow_id] = {
+                'step': 1,
+                'inputs_collected': False,
+                'jd_accepted': False,
+                'ranking_accepted': False,
+                'company_id': None,
+                'job_role': None,
+                'num_search': None,
+                'num_message': None
+            }
+            st.session_state.current_workflow_id = workflow_id
+        if st.session_state.workflows:
+            selected_workflow = st.selectbox(
+                "Select Workflow",
+                options=list(st.session_state.workflows.keys()),
+                index=list(st.session_state.workflows.keys()).index(st.session_state.current_workflow_id) if st.session_state.current_workflow_id else 0
+            )
+            st.session_state.current_workflow_id = selected_workflow
+
+    # Main content area
+    if not st.session_state.current_workflow_id:
+        st.write("Please start a new workflow to begin.")
+        return
+
+    workflow = st.session_state.workflows[st.session_state.current_workflow_id]
+    st.write(f"Current Workflow: {st.session_state.current_workflow_id}")
+
+    # Generate dynamic file names
+    if workflow['company_id'] and workflow['job_role']:
+        prefix = f"{sanitize_filename(workflow['company_id'])}_{sanitize_filename(workflow['job_role'])}"
+        jd_file = f"jd_{prefix}.md"
+        candidate_csv = f"candidates_{sanitize_filename(workflow['job_role'])}.csv"
+        ranked_csv = f"ranked_{prefix}.csv"
+        messaged_csv = f"messaged_{prefix}.csv"
+    else:
+        jd_file = candidate_csv = ranked_csv = messaged_csv = None
+
+    # **Step 1: Collect User Inputs**
+    if workflow['step'] == 1:
+        st.header("Enter Job Details")
         job_role = st.text_input("Job Role (e.g., Event Planner)")
-        num_people = st.number_input("Number of People to Message", min_value=1, step=1)
-        company_id = st.text_input("LinkedIn Company ID (e.g., urn:li:organization:123456)")
-        if st.button("Generate Job Description"):
-            if job_role and num_people and company_id:
-                st.session_state.job_role = job_role
-                st.session_state.num_people = num_people
-                # Assuming LinkedIn ID is the URN; we'll use it as company_name for simplicity
-                st.session_state.company_name = company_id
-                st.session_state.step = 2
-            else:
-                st.error("Please fill in all fields.")
+        company_id = st.text_input("Company ID (e.g., moon-events)")
+        num_search = st.number_input("Number of Employees to Search", min_value=1, step=1)
+        num_message = st.number_input("Number of Employees to Message", min_value=1, step=1)
 
-    # Step 2: Generate and review job description
-    elif st.session_state.step == 2:
-        st.header("Step 2: Review Job Description")
-        job_description_file = f"{st.session_state.company_name}_{st.session_state.job_role}.md"
-        with st.spinner("Generating job description..."):
-            # Pass company_id as company_name; adjust run_graph if it can use URN directly
-            run_graph(st.session_state.company_name, st.session_state.job_role, llm, api)
-        with open(job_description_file, "r") as f:
-            job_description = f.read()
-        st.markdown(job_description)
+        if st.button("Submit"):
+            if job_role and company_id and num_search >= num_message:
+                workflow['job_role'] = job_role
+                workflow['company_id'] = company_id
+                workflow['num_search'] = num_search
+                workflow['num_message'] = num_message
+                workflow['inputs_collected'] = True
+                workflow['step'] = 2
+                st.rerun()
+            else:
+                st.error("Please fill all fields correctly. Ensure 'Number to Message' <= 'Number to Search'.")
+
+    # **Step 2: Generate and Display Job Description**
+    elif workflow['step'] == 2 and workflow['inputs_collected']:
+        st.header("Review Job Description")
+        if not os.path.exists(jd_file):
+            with st.spinner("Generating Job Description..."):
+                try:
+                    run_graph(workflow['company_id'], workflow['job_role'])
+                except Exception as e:
+                    st.error(f"Error generating job description: {e}")
+                    return
+        try:
+            with open(jd_file, "r", encoding="utf-8") as f:
+                jd_content = f.read()
+            st.markdown("### Generated Job Description")
+            st.markdown(jd_content)
+        except FileNotFoundError:
+            st.error(f"Job description file {jd_file} not found.")
+            return
+
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("Regenerate"):
-                with st.spinner("Regenerating job description..."):
-                    run_graph(st.session_state.company_name, st.session_state.job_role, llm, api)
+            if st.button("Regenerate Job Description"):
+                if os.path.exists(jd_file):
+                    os.remove(jd_file)
+                with st.spinner("Regenerating Job Description..."):
+                    run_graph(workflow['company_id'], workflow['job_role'])
                 st.rerun()
         with col2:
-            if st.button("Accept"):
-                st.session_state.step = 3
+            if st.button("Accept Job Description"):
+                workflow['jd_accepted'] = True
+                workflow['step'] = 3
+                st.rerun()
 
-    # Step 3: Gather and rank candidates
-    elif st.session_state.step == 3:
-        st.header("Step 3: Gather and Rank Candidates")
-        candidate_csv_file = f"candidates_{st.session_state.job_role.replace(' ', '_')}.csv"
-        ranked_csv_file = "ranked_candidates.csv"
-        job_description_file = f"{st.session_state.company_name}_{st.session_state.job_role}.md"
-        with st.spinner("Gathering candidates..."):
-            gather_people_csv(st.session_state.job_role, 100, api)  # Gather up to 100 candidates
-        with st.spinner("Ranking candidates..."):
-            ranker_sort(job_description_file, candidate_csv_file, ranked_csv_file)
-        # Display top candidates with images
-        df = pd.read_csv(ranked_csv_file)
-        st.subheader("Top Candidates")
-        for index, row in df.head(10).iterrows():
-            st.write(f"**{row['name']}**")
-            if 'profile image URL' in row and pd.notna(row['profile image URL']) and row['profile image URL'] != 'N/A':
-                st.image(row['profile image URL'], width=100)
-            st.write(f"Skills: {row['skills']}")
-            st.write(f"Job Title: {row['job title']}")
-            st.write(f"Location: {row['location']}")
-            st.write("---")
-        if st.button("Proceed to Messaging"):
-            st.session_state.step = 4
+    # **Step 3: Gather Candidates and Display CSV**
+    elif workflow['step'] == 3 and workflow['jd_accepted']:
+        st.header("Candidate Gathering")
+        if not os.path.exists(candidate_csv):
+            with st.spinner("Gathering Candidates..."):
+                try:
+                    gather_people_csv(workflow['job_role'], workflow['num_search'])
+                except Exception as e:
+                    st.error(f"Error gathering candidates: {e}")
+                    return
+        st.subheader("Collected Candidates")
+        display_csv_with_images(candidate_csv)
+        if st.button("Proceed to Ranking"):
+            workflow['step'] = 4
+            st.rerun()
 
-    # Step 4: Message top candidates
-    elif st.session_state.step == 4:
-        st.header("Step 4: Message Top Candidates")
-        ranked_csv_file = "ranked_candidates.csv"
-        job_description_file = f"{st.session_state.company_name}_{st.session_state.job_role}.md"
-        num_people = st.session_state.num_people
-        with st.spinner(f"Messaging top {num_people} candidates..."):
-            message_people(job_description_file, ranked_csv_file, num_people, llm, api)
-        st.success(f"Successfully messaged top {num_people} candidates!")
-        # Display messaged candidates
-        messaged_csv_file = f"messaged_{ranked_csv_file}"
-        df = pd.read_csv(messaged_csv_file)
+    # **Step 4: Rank Candidates and Display Ranked CSV**
+    elif workflow['step'] == 4 and workflow['jd_accepted']:
+        st.header("Candidate Ranking")
+        if not os.path.exists(ranked_csv):
+            with st.spinner("Ranking Candidates..."):
+                try:
+                    ranker_sort(jd_file, candidate_csv, ranked_csv)
+                except Exception as e:
+                    st.error(f"Error ranking candidates: {e}")
+                    return
+        st.subheader("Ranked Candidates")
+        display_csv_with_images(ranked_csv)
+        if st.button("Accept Ranking"):
+            workflow['ranking_accepted'] = True
+            workflow['step'] = 5
+            st.rerun()
+
+    # **Step 5: Message Candidates and Display Results**
+    elif workflow['step'] == 5 and workflow['ranking_accepted']:
+        st.header("Messaging Candidates")
+        if not os.path.exists(messaged_csv):
+            with st.spinner(f"Messaging {workflow['num_message']} Candidates..."):
+                try:
+                    message_people(jd_file, ranked_csv, workflow['num_message'])
+                except Exception as e:
+                    st.error(f"Error messaging candidates: {e}")
+                    return
         st.subheader("Messaged Candidates")
-        for index, row in df.iterrows():
-            st.write(f"**{row['name']}**")
-            st.write(f"Message: {row['message']}")
-            st.write("---")
+        display_csv_with_images(messaged_csv, highlight_green=True)
+        st.success(f"Successfully messaged {workflow['num_message']} candidates!")
+        if st.button("Finish Workflow"):
+            st.write("Workflow completed. Start a new workflow from the sidebar if desired.")
 
 if __name__ == "__main__":
     main()
