@@ -1,0 +1,17 @@
+#clone the repo and remove the connections
+
+set .env file variable
+activate virtual environment
+
+# move to linkedin-api and install linkedin dependency
+cd agents
+cd Linkedin-api/linkedin-api  
+pip install .
+cd ..
+
+# install requirement files
+pip install -r requriments.txt
+
+
+run this 
+streamlit run c:/Users/Aditya/Downloads/agent/agents/main.py
