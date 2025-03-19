@@ -189,8 +189,11 @@ def run_graph(firm_name: str, role: str) -> None:
     Executes the job description generation workflow and saves the result as a markdown file.
     """
     result = graph.invoke({"firm_name": firm_name, "role": role})
+    fileName = f"{firm_name}_{role}.md"
     with open(f"{firm_name}_{role}.md", "w") as file:
         file.write(result["job_description"])
-
+    return fileName
+    
+    
 if __name__ == "__main__":
-    run_graph("moon-event", "Event Planner")
+    print(run_graph("moon-event", "Event Planner"))
